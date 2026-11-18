@@ -312,6 +312,67 @@ func TestAppPatchKeySetsLimits(t *testing.T) {
 	}
 }
 
+func TestAppPatchKeyClearsAllModels(t *testing.T) {
+	app, plain := configureTestApp(t)
+	t.Cleanup(app.Shutdown)
+
+	patch := func(body string) publicKey {
+		t.Helper()
+		req, err := json.Marshal(ManagementRequest{
+			Method: http.MethodPatch,
+			Path:   "/v0/management/plugins/cpa-key-policy/keys",
+			Body:   []byte(body),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := app.HandleMethod(MethodManagementHandle, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp := managementResponseFromEnvelope(t, raw)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, resp.Body)
+		}
+		var payload struct {
+			Key publicKey `json:"key"`
+		}
+		if err := json.Unmarshal(resp.Body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.Key
+	}
+
+	unchanged := patch(`{"id":"team-a","rpm":30}`)
+	if len(unchanged.Models) != 1 || len(unchanged.Aliases) != 1 {
+		t.Fatalf("omitting models changed the model permissions: %+v", unchanged)
+	}
+	cleared := patch(`{"id":"team-a","models":[]}`)
+	if len(cleared.Models) != 0 || len(cleared.Aliases) != 0 {
+		t.Fatalf("empty model list left permissions in PATCH response: %+v", cleared)
+	}
+
+	reloaded := policy.NewStore()
+	t.Cleanup(reloaded.StopUsageFlusher)
+	cfg := policy.DefaultConfig()
+	cfg.StateFile = app.store.StatePath()
+	if err := reloaded.Configure(cfg); err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	key := reloaded.FindByAPIKey(plain)
+	if key == nil || len(key.Models) != 0 || len(key.Aliases) != 0 || key.RPM != 30 {
+		t.Fatalf("expected no permissions after reload and unchanged RPM, got %+v", key)
+	}
+	if len(reloaded.AliasesSnapshot()) != 1 {
+		t.Fatal("clearing one key removed the shared alias")
+	}
+	decision := reloaded.Authenticate(http.MethodPost, "/v1/chat/completions",
+		http.Header{"Authorization": {"Bearer " + plain}}, nil, []byte(`{"model":"fast"}`))
+	if !decision.Known || decision.Allowed || decision.Reason != "model_not_allowed" {
+		t.Fatalf("old model access was not revoked: %+v", decision)
+	}
+}
+
 func TestManagementRegistrationDeclaresResource(t *testing.T) {
 	app := NewApp()
 	resp := app.managementRegistration()

@@ -743,6 +743,11 @@ func (a *App) patchKey(body []byte) ManagementResponse {
 	}
 	if req.Models != nil {
 		current.Models = req.Models
+		// The form submits models: [] to clear access. With no rules to migrate,
+		// the store would otherwise rebuild Models from these old alias refs.
+		if len(req.Models) == 0 && req.Aliases == nil {
+			current.Aliases = nil
+		}
 	}
 	if req.Aliases != nil {
 		current.Aliases = req.Aliases

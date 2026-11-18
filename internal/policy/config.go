@@ -317,7 +317,7 @@ func DecodeConfig(raw []byte) (Config, error) {
 // deduped by alias name (a key referencing a multi-target alias gets ONE
 // ref, so resolveAliasRefsToModels expands it to all the alias's targets).
 // After migration, the key's Models slice is cleared (the canonical source
-// becomes Aliases). Keys that already have Aliases are left untouched.
+// becomes Aliases). Keys with no Models keep their existing Alias refs.
 func migrateModelsToAliases(cfg *Config) {
 	if len(cfg.Keys) == 0 {
 		return
@@ -331,12 +331,8 @@ func migrateModelsToAliases(cfg *Config) {
 	for i := range cfg.Keys {
 		key := &cfg.Keys[i]
 		if len(key.Models) == 0 {
-			// No Models to migrate. Leave existing Aliases intact — this is the
-			// normal reload path where Models is a derived field (stripped from
-			// disk by SaveState and repopulated in memory by Configure). Only the
-			// PATCH path sends non-nil Models, and an explicit clear sends Models
-			// as an empty non-nil slice which still falls through to the
-			// reconciliation below and correctly drops all alias refs.
+			// Persisted keys can have alias refs without model rules. The PATCH
+			// handler clears those refs when a user explicitly removes all models.
 			continue
 		}
 		// Build the set of alias names present in this key's Models — this is
