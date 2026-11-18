@@ -240,18 +240,26 @@ function fromModelDefinitions(channel: string, payload: unknown): RawEntry[] {
   return [{ provider: channel, models }];
 }
 
-// Is the *-api-key list at `endpoint` non-empty? CPA's Get<Key> handlers return
-// 200 with a top-level "<channel>-api-key": [...] array (nil/empty when none
-// configured), NOT a 404, so we must inspect the body to know whether a
-// credential is actually present. Returns the mapped provider name when at
-// least one key exists, else "".
-function apiKeyProviderIfConfigured(endpoint: string, payload: unknown): string {
-  const provider = API_KEY_CHANNELS[endpoint];
-  if (!provider) return "";
+function fromAPIKeyChannel(
+  endpoint: string,
+  provider: string,
+  payload: unknown,
+): RawEntry | undefined {
   const root = payload as Record<string, unknown> | null;
-  if (!root) return "";
-  const list = root[endpoint];
-  return Array.isArray(list) && list.length > 0 ? provider : "";
+  const credentials = root?.[endpoint];
+  if (!Array.isArray(credentials) || credentials.length === 0) return;
+
+  const models = credentials.flatMap((credential: unknown) => {
+    const configured = (credential as { models?: unknown } | null)?.models;
+    if (!Array.isArray(configured)) return toStrings(configured);
+
+    return toStrings(configured.map((model: unknown) => {
+      const alias = (model as { alias?: unknown } | null)?.alias;
+      // CPA registers the alias when one is set, and the upstream name otherwise.
+      return typeof alias === "string" && alias.trim() ? alias : model;
+    }));
+  });
+  return { provider, models };
 }
 
 // Filter the collected raw entries down to those that should be visible in the
@@ -308,6 +316,7 @@ export async function fetchCatalog(
 ): Promise<CatalogModel[]> {
   const c = apiClient();
   const entries: RawEntry[] = [];
+  const apiKeyEntries: RawEntry[] = [];
   // Tiered providers that the auth-files path contributed models for. Filled
   // during the auth-files pass; read in filterByConfigured to suppress bare
   // static entries for providers already covered with tier subgroups.
@@ -320,10 +329,13 @@ export async function fetchCatalog(
   const selected = new Set<string>();
   for (const p of selectedProviders ?? []) selected.add(p.toLowerCase());
 
-  const safe = async <T>(p: Promise<{ data: T }>, apply: (d: T) => void) => {
+  const safe = async <T>(
+    p: Promise<{ data: T }>,
+    apply: (d: T) => void | Promise<void>,
+  ) => {
     try {
       const { data } = await p;
-      apply(data);
+      await apply(data);
     } catch {
       /* skip unavailable source */
     }
@@ -345,15 +357,12 @@ export async function fetchCatalog(
     },
   );
 
-  // Per-channel API-key endpoints. These responses carry their key list under a
-  // top-level "<channel>-api-key" array (NOT under "models"/"keys"), so
-  // fromChannelKey yields no models here — we use them solely to detect whether
-  // the user has configured an API-key credential, marking the mapped provider
-  // as configured when the list is non-empty.
-  for (const ch of Object.keys(API_KEY_CHANNELS)) {
+  for (const [ch, provider] of Object.entries(API_KEY_CHANNELS)) {
     await safe(c.get("/v0/management/" + ch), (d) => {
-      const provider = apiKeyProviderIfConfigured(ch, d);
-      if (provider) configuredProviders.add(provider);
+      const entry = fromAPIKeyChannel(ch, provider, d);
+      if (!entry) return;
+      configuredProviders.add(provider);
+      apiKeyEntries.push(entry);
     });
   }
 
@@ -430,10 +439,9 @@ export async function fetchCatalog(
   });
 
   for (const ch of STATIC_CHANNELS) {
-    await safe(
-      c.get("/v0/management/model-definitions/" + ch),
-      (d) => entries.push(...fromModelDefinitions(ch, d)),
-    );
+    await safe(c.get("/v0/management/model-definitions/" + ch), (d) => {
+      entries.push(...fromModelDefinitions(ch, d));
+    });
   }
 
   const filtered = filterByConfigured(
@@ -442,7 +450,9 @@ export async function fetchCatalog(
     selected,
     authFileTieredProviders,
   );
-  return normalizeCatalog(filtered);
+  // Explicit API key models remain available even when auth files contribute
+  // tiered groups and the corresponding bare static definitions are hidden.
+  return normalizeCatalog([...apiKeyEntries, ...filtered]);
 }
 
 // A picker group: a provider, optionally split by tier (codex free / team /

@@ -1,5 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { apiClient } from "./client";
 import {
+  fetchCatalog,
   normalizeCatalog,
   groupByCatalog,
   readPlanType,
@@ -8,6 +10,77 @@ import {
   formatTierLabel,
   CLASSIFY_GROUP_PREFIX,
 } from "./models";
+
+vi.mock("./client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./client")>(),
+  apiClient: vi.fn(),
+}));
+
+describe("fetchCatalog API key models", () => {
+  function mockManagementEndpoints(
+    responses: Record<string, unknown>,
+    catalog: () => Promise<{ data: unknown }> = async () => ({ data: {} }),
+  ) {
+    const get = vi.fn(async (path: string) => ({
+      data: responses[path.replace("/v0/management/", "")] ?? {},
+    }));
+    vi.mocked(apiClient).mockReturnValue({
+      get,
+      post: vi.fn(catalog),
+    } as unknown as ReturnType<typeof apiClient>);
+  }
+
+  it("merges configured Gemini models into the picker under the Gemini provider", async () => {
+    mockManagementEndpoints({
+      "gemini-api-key": {
+        "gemini-api-key": [
+          { models: [{ name: "gemini-4-hydrogen", alias: "" }] },
+          {
+            models: [
+              { name: "gemini-4-hydrogen" },
+              { name: "upstream-preview", alias: "  gemini-preview  " },
+              null,
+            ],
+          },
+          {},
+        ],
+      },
+      "model-definitions/gemini": { models: [{ id: "gemini-default" }] },
+      "vertex-api-key": { "vertex-api-key": [{}] },
+      "model-definitions/vertex": {
+        models: [{ id: "gemini-4-hydrogen" }],
+      },
+      "claude-api-key": { "claude-api-key": [] },
+      "model-definitions/claude": { models: [{ id: "unconfigured" }] },
+    });
+
+    await expect(fetchCatalog()).resolves.toEqual([
+      { provider: "gemini", model: "gemini-4-hydrogen" },
+      { provider: "gemini", model: "gemini-default" },
+      { provider: "gemini", model: "gemini-preview" },
+      { provider: "vertex", model: "gemini-4-hydrogen" },
+    ]);
+  });
+
+  it("keeps explicit API key models alongside asynchronously loaded credential groups", async () => {
+    mockManagementEndpoints({
+      "codex-api-key": { "codex-api-key": [{ models: [{ name: "key-model" }] }] },
+      "auth-files": { files: [{ name: "codex-team.json", provider: "codex" }] },
+      "auth-files/models": { models: [{ id: "team-model" }] },
+      "model-definitions/codex": { models: [{ id: "static-model" }] },
+    }, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return {
+        data: { entries: [{ provider: "codex", group: "team", models: ["team-model"] }] },
+      };
+    });
+
+    await expect(fetchCatalog()).resolves.toEqual([
+      { provider: "codex", model: "key-model" },
+      { provider: "codex", group: "team", model: "team-model" },
+    ]);
+  });
+});
 
 describe("normalizeCatalog", () => {
   it("flattens provider + string models", () => {
