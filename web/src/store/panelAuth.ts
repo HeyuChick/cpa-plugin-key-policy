@@ -15,7 +15,8 @@
 // "cli-proxy-auth", so a malicious site embedding this plugin cannot read the
 // panel key. We additionally gate on window.self !== window.top (embedded only).
 
-const ENC_PREFIX = "enc::v1::";
+const ENC_PREFIX_V1 = "enc::v1::";
+const ENC_PREFIX_V2 = "enc::v2::";
 const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
 const STORAGE_KEY = "cli-proxy-auth";
 
@@ -24,7 +25,8 @@ export interface PanelAuth {
   managementKey: string;
 }
 
-let cachedKeyBytes: Uint8Array | null = null;
+type StorageVersion = "v1" | "v2";
+const cachedKeyBytes: Partial<Record<StorageVersion, Uint8Array>> = {};
 
 function encodeText(text: string): Uint8Array {
   return new TextEncoder().encode(text);
@@ -34,20 +36,16 @@ function decodeText(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
 }
 
-// Mirrors the panel's getKeyBytes(): `${SECRET_SALT}|${host}|${userAgent}`.
-function getKeyBytes(): Uint8Array {
-  if (cachedKeyBytes) return cachedKeyBytes;
-  try {
-    cachedKeyBytes = encodeText(`${SECRET_SALT}|${window.location.host}|${navigator.userAgent}`);
-  } catch {
-    cachedKeyBytes = encodeText(SECRET_SALT);
-  }
-  return cachedKeyBytes;
+function getKeyBytes(version: StorageVersion): Uint8Array {
+  return (cachedKeyBytes[version] ??= encodeText(version === "v2"
+    ? `${SECRET_SALT}|v2|${window.location.host}`
+    : `${SECRET_SALT}|${window.location.host}|${navigator.userAgent}`));
 }
 
 // Exposed for tests: clear the cached key so a changed host/userAgent is used.
 export function _resetKeyCache(): void {
-  cachedKeyBytes = null;
+  delete cachedKeyBytes.v1;
+  delete cachedKeyBytes.v2;
 }
 
 function xorBytes(data: Uint8Array, keyBytes: Uint8Array): Uint8Array {
@@ -75,7 +73,7 @@ function fromBase64(base64: string): Uint8Array {
 export function obfuscateData(value: string): string {
   if (!value) return value;
   try {
-    return `${ENC_PREFIX}${toBase64(xorBytes(encodeText(value), getKeyBytes()))}`;
+    return `${ENC_PREFIX_V2}${toBase64(xorBytes(encodeText(value), getKeyBytes("v2")))}`;
   } catch {
     return value;
   }
@@ -83,10 +81,14 @@ export function obfuscateData(value: string): string {
 
 // Deobfuscation, identical to the panel's deobfuscateData().
 export function deobfuscateData(payload: string): string {
-  if (!payload || !payload.startsWith(ENC_PREFIX)) return payload;
+  const version = payload.startsWith(ENC_PREFIX_V2) ? "v2"
+    : payload.startsWith(ENC_PREFIX_V1) ? "v1"
+    : null;
+  if (!version) return payload;
   try {
-    const encrypted = fromBase64(payload.slice(ENC_PREFIX.length));
-    return decodeText(xorBytes(encrypted, getKeyBytes()));
+    const prefix = version === "v2" ? ENC_PREFIX_V2 : ENC_PREFIX_V1;
+    const encrypted = fromBase64(payload.slice(prefix.length));
+    return decodeText(xorBytes(encrypted, getKeyBytes(version)));
   } catch {
     return payload;
   }
@@ -111,10 +113,15 @@ function extractAuth(parsed: unknown): PanelAuth | null {
   // in case the envelope is absent (older/different storage layouts).
   const state =
     (root.state as Record<string, unknown> | undefined) ?? (root as Record<string, unknown>);
-  const apiBase = typeof state.apiBase === "string" ? state.apiBase : "";
+  const savedBase = state.sessionMode === "manager_embedded" && state.sessionPanelBase
+    ? state.sessionPanelBase
+    : state.apiBase;
   const managementKey = typeof state.managementKey === "string" ? state.managementKey : "";
-  if (!apiBase || !managementKey) return null;
-  return { apiBase, managementKey };
+  if (typeof savedBase !== "string" || !managementKey) return null;
+  const base = new URL(savedBase);
+  // A remembered key belongs to the panel serving this iframe.
+  if (base.origin !== window.location.origin || base.username || base.password) return null;
+  return { apiBase: savedBase, managementKey };
 }
 
 // Read the panel's saved auth from shared same-origin localStorage.
@@ -124,6 +131,7 @@ export function readPanelAuth(): PanelAuth | null {
   if (!isEmbedded()) return null;
   let raw: string | null;
   try {
+    if (window.top?.location.origin !== window.location.origin) return null;
     raw = localStorage.getItem(STORAGE_KEY);
   } catch {
     return null;
