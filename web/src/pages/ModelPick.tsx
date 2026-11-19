@@ -2,12 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { fetchCatalog, formatTierLabel, groupByCatalog } from "../api/models";
 import type { CatalogGroup } from "../api/models";
+import type { KeyFormRouteState } from "../components/KeyForm";
 import type { ModelRule, AliasTarget } from "../types";
 import { useT } from "../i18n";
 
 // Selection key: "provider|group|model" (all lowercased for dedupe matching).
 function keyOf(g: CatalogGroup, model: string): string {
   return g.provider + "|" + (g.group ?? "").toLowerCase() + "|" + model.toLowerCase();
+}
+
+function targetKey(rule: AliasTarget): string {
+  return rule.provider.toLowerCase() + "|" + (rule.group ?? "").toLowerCase() + "|" + rule.target_model.toLowerCase();
 }
 
 export default function ModelPick() {
@@ -22,17 +27,17 @@ export default function ModelPick() {
 
   // Initial selection comes from router state (passed by KeyForm when it
   // navigates here). Edit-mode keys pass their current models in too.
-  const st = loc.state as {
-    models?: ModelRule[];
+  const st = loc.state as (KeyFormRouteState & {
     currentTargets?: AliasTarget[];
     returnTo?: string;
     /** Full alias form draft — forwarded back so name/dispatch/prices survive. */
     draftAlias?: unknown;
-  } | null;
+  }) | null;
   // Context-aware: if a `returnTo` route is supplied (e.g. from the alias
   // editor), we are picking targets for a global alias, not models for a key.
   const aliasMode = !!st?.returnTo;
-  const initialModels = st?.models ?? [];
+  const draftKey = st?.draftKey;
+  const initialModels = draftKey?.models ?? [];
   const initialTargets = st?.currentTargets ?? [];
   const backTo = aliasMode
     ? st!.returnTo!
@@ -40,16 +45,7 @@ export default function ModelPick() {
   const draftAlias = st?.draftAlias;
 
   const [selected, setSelected] = useState<Set<string>>(() => {
-    const s = new Set<string>();
-    for (const r of initialModels) {
-      const g = (r.group ?? "").toLowerCase();
-      s.add(r.provider.toLowerCase() + "|" + g + "|" + r.target_model.toLowerCase());
-    }
-    for (const tg of initialTargets) {
-      const g = (tg.group ?? "").toLowerCase();
-      s.add(tg.provider.toLowerCase() + "|" + g + "|" + tg.target_model.toLowerCase());
-    }
-    return s;
+    return new Set([...initialModels, ...initialTargets].map(targetKey));
   });
 
   useEffect(() => {
@@ -150,7 +146,11 @@ export default function ModelPick() {
       });
       nav(backTo, { state: { pickedTargets: targets, draftAlias } });
     } else {
-      nav(backTo, { state: { pickedModels: rules } });
+      const retained = initialModels.filter((model) => selected.has(targetKey(model)));
+      const retainedTargets = new Set(retained.map(targetKey));
+      const added = rules.filter((rule) => !retainedTargets.has(targetKey(rule)));
+      const state: KeyFormRouteState = { draftKey: { ...draftKey, models: [...retained, ...added] } };
+      nav(backTo, { replace: true, state });
     }
   };
 
@@ -166,7 +166,11 @@ export default function ModelPick() {
       });
       return;
     }
-    nav(backTo);
+    if (draftKey) {
+      nav(-1);
+    } else {
+      nav(backTo, { replace: true });
+    }
   };
 
   return (

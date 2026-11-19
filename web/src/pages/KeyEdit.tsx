@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { listKeys, patchKey, rotateKey, resetRPM, deleteKey } from "../api/keys";
-import type { KeyPublic, ModelRule } from "../types";
-import KeyForm from "../components/KeyForm";
+import type { KeyPublic } from "../types";
+import KeyForm, { type KeyFormRouteState } from "../components/KeyForm";
 import PlainKeyModal from "../components/PlainKeyModal";
 import { MobileFormHeader, MobileTabBar } from "./KeyList";
 import { useT } from "../i18n";
@@ -35,19 +35,13 @@ export default function KeyEdit() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  // When the model-picker page returns, merge its selection into the loaded
-  // key's models, preserving everything else (id/name/limits/prices). The
-  // KeyForm price-map init keeps existing rows for aliases that survived.
-  const picked = (loc.state as { pickedModels?: ModelRule[] } | null)?.pickedModels;
-  const initial = useMemo<KeyPublic | null>(() => {
-    if (!key) return null;
-    if (!picked) return key;
-    return { ...key, models: picked };
-  }, [key, picked]);
+  const draft = (loc.state as KeyFormRouteState | null)?.draftKey;
 
   if (loading) return <div className="muted">{t("keys.loading")}</div>;
   if (error || !key) return <div className="error">{error || t("edit.notFound")}</div>;
-  if (!initial) return null;
+  const initial = draft && (draft.id === undefined || draft.id === key.id)
+    ? { ...key, ...draft }
+    : key;
 
   const title = t("edit.title", { id: key.id });
 

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
-import type { KeyPublic, ModelRule, AliasMapping } from "../types";
+import { useLocation, useNavigate } from "react-router-dom";
+import type { ModelRule, AliasMapping } from "../types";
 import ModelPicker from "./ModelPicker";
 import { getPriceTable, lookupPrice, type PriceTable } from "../store/modelPrices";
 import { fetchAliases } from "../api/mappings";
@@ -21,8 +21,12 @@ export interface KeyFormValues {
   allow_models_endpoint?: boolean;
 }
 
+export interface KeyFormRouteState {
+  draftKey?: Partial<KeyFormValues>;
+}
+
 interface Props {
-  initial?: KeyPublic;
+  initial?: Partial<KeyFormValues>;
   idReadOnly?: boolean;
   submitLabel: string;
   onSubmit: (v: KeyFormValues) => Promise<void>;
@@ -31,9 +35,8 @@ interface Props {
   error?: string;
   // route path for the standalone model-picker page (e.g. "/keys/new/models").
   // When set, the desktop form renders a chip box + "add model" button that
-  // navigates here with the current models as router state. The picker page
-  // navigates back with state.pickedModels, which the parent merges into
-  // `initial` before re-rendering this form.
+  // navigates here with the current draft. The picker returns the draft with
+  // the confirmed model selection.
   pickPath?: string;
   // extra-danger button config for the footer (edit mode). When provided,
   // renders a danger-outline button on the far right of the footer.
@@ -80,6 +83,7 @@ export default function KeyForm({
   onDanger,
 }: Props) {
   const nav = useNavigate();
+  const location = useLocation();
   const [id, setId] = useState(initial?.id ?? "");
   const [name, setName] = useState(initial?.name ?? "");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
@@ -255,14 +259,8 @@ export default function KeyForm({
     }));
   };
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLocalErr("");
-    if (!id.trim()) {
-      setLocalErr(t("keyForm.idRequired"));
-      return;
-    }
-    // Stamp the per-alias pricing back onto the model rules before submit.
+  const readDraft = (): KeyFormValues => {
+    // Carry current pricing in each rule so it survives the picker round trip.
     const pricedModels: ModelRule[] = models.map((m) => {
       const row = prices[priceKey(m)];
       return {
@@ -274,18 +272,36 @@ export default function KeyForm({
         per_call_usd: row?.per_call_usd ?? 0,
       };
     });
+    return {
+      id,
+      name,
+      enabled,
+      rpm,
+      models: pricedModels,
+      daily_limit_usd: dailyLimit,
+      weekly_limit_usd: weeklyLimit,
+      allow_models_endpoint: allowModels,
+    };
+  };
+
+  const openModelPicker = () => {
+    if (!pickPath) return;
+    const state: KeyFormRouteState = { draftKey: readDraft() };
+    // Browser Back also returns to the draft saved in the preceding entry.
+    nav(location.pathname + location.search, { replace: true, state });
+    nav(pickPath, { state });
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLocalErr("");
+    if (!id.trim()) {
+      setLocalErr(t("keyForm.idRequired"));
+      return;
+    }
     setBusy(true);
     try {
-      await onSubmit({
-        id: id.trim(),
-        name: name.trim(),
-        enabled,
-        rpm,
-        models: pricedModels,
-        daily_limit_usd: dailyLimit,
-        weekly_limit_usd: weeklyLimit,
-        allow_models_endpoint: allowModels,
-      });
+      await onSubmit({ ...readDraft(), id: id.trim(), name: name.trim() });
     } catch (err) {
       const e = err as { response?: { data?: { error?: { message?: string } } }; message?: string };
       setLocalErr(e.response?.data?.error?.message ?? e.message ?? t("keyForm.submitFailed"));
@@ -622,7 +638,7 @@ export default function KeyForm({
                     }} aria-label={t("keyForm.removeModel")}>×</button>
                   </span>
                 ))}
-                <button type="button" className="mc-add" onClick={() => nav(pickPath, { state: { models } })}>
+                <button type="button" className="mc-add" onClick={openModelPicker}>
                   + {t("keyForm.addModel")}
                 </button>
               </div>
@@ -790,7 +806,7 @@ export default function KeyForm({
                 }} aria-label={t("keyForm.removeModel")}>×</button>
               </span>
             ))}
-            <button type="button" className="mc-add" onClick={() => nav(pickPath, { state: { models } })}>
+            <button type="button" className="mc-add" onClick={openModelPicker}>
               + {t("keyForm.addModel")}
             </button>
           </div>

@@ -1,11 +1,10 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { createKey } from "../api/keys";
-import KeyForm from "../components/KeyForm";
+import KeyForm, { type KeyFormRouteState } from "../components/KeyForm";
 import PlainKeyModal from "../components/PlainKeyModal";
 import { MobileFormHeader, MobileTabBar } from "./KeyList";
 import { useT } from "../i18n";
-import type { KeyPublic, ModelRule } from "../types";
 
 export default function KeyNew() {
   const nav = useNavigate();
@@ -15,15 +14,7 @@ export default function KeyNew() {
 
   const title = t("new.title");
 
-  // When the standalone model-picker page returns here with a selection,
-  // merge it into the form's initial models. Pricing rows for newly-picked
-  // aliases start at 0; preserved aliases keep their existing rows via
-  // KeyForm's price-map init from `initial.models`.
-  const picked = (loc.state as { pickedModels?: ModelRule[] } | null)?.pickedModels;
-  const initial = useMemo<KeyPublic | undefined>(
-    () => (picked ? ({ id: "", name: "", enabled: true, rpm: 0, models: picked, daily_limit_usd: 0, weekly_limit_usd: 0 } as KeyPublic) : undefined),
-    [picked],
-  );
+  const draft = (loc.state as KeyFormRouteState | null)?.draftKey;
 
   return (
     <div className="form-page">
@@ -32,7 +23,7 @@ export default function KeyNew() {
       </div>
       <MobileFormHeader title={title} backTo="/keys" />
       <KeyForm
-        initial={initial}
+        initial={draft}
         pickPath="/keys/new/models"
         submitLabel={t("new.create")}
         onCancel={() => nav("/keys")}
